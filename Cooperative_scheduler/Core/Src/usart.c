@@ -12,6 +12,7 @@
 
 extern volatile uint32_t timer_tick_count;
 
-//uint32_t get_time(void) {
+uint32_t get_time(void) {
 //    return timer_tick_count * 10;  // Nếu mỗi tick là 10ms
-//}
+    return timer_tick_count;
+}

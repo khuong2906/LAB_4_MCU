@@ -6,16 +6,17 @@
  */
 
 #include "scheduler.h"
+#include "main.h"               // cho __disable_irq / __enable_irq
 #include "usart.h"
 #include <stdlib.h>
 #include <stdio.h>
 
-
+volatile uint32_t timer_tick_count;
 
 #define TICK 10
 
 
-sTasks SCH_tasks_G[SCH_MAX_TASKS];
+sTask SCH_tasks_G[SCH_MAX_TASKS];
 uint8_t current_index_task = 0;
 
 //int timer_tick_count = 0;
@@ -25,49 +26,34 @@ int global_tick_count = 0;  // Thêm biến để theo dõi tổng số tick k�
 
 
 //origin
-void SCH_Add_Task(void (* pFunction)() , uint32_t DELAY, uint32_t PERIOD){
-// Have we reached the end of the list?
-if (current_index_task < SCH_MAX_TASKS){
-
-// If we’re here, there is a space in the task array
-	SCH_tasks_G[current_index_task].pTask = pFunction;
-	SCH_tasks_G[current_index_task].Delay = DELAY/TICK;
-	SCH_tasks_G[current_index_task].Period = PERIOD/TICK;
-	SCH_tasks_G[current_index_task].RunMe = 0;
-
-	SCH_tasks_G[current_index_task].TaskID = current_index_task;
-    SCH_tasks_G[current_index_task].DeleteMe = 0;
-
-
-	current_index_task++;
-	}
+uint32_t SCH_Add_Task(void (*pFunction)(void), uint32_t DELAY, uint32_t PERIOD) {
+    for (uint32_t i = 0; i < SCH_MAX_TASKS; i++) {
+        if (SCH_tasks_G[i].pTask == 0) {
+            SCH_tasks_G[i].pTask  = pFunction;
+            SCH_tasks_G[i].Delay  = DELAY / TICK;
+            SCH_tasks_G[i].Period = PERIOD / TICK;
+            SCH_tasks_G[i].RunMe  = 0;
+            SCH_tasks_G[i].TaskID = i;
+            return i;
+        }
+    }
+    return SCH_MAX_TASKS;
 }
 
 void SCH_Update(void) {
-    global_tick_count++;  // Cập nhật tổng số tick
+    timer_tick_count++;
+    for (uint32_t i = 0; i < SCH_MAX_TASKS; i++) {
+        sTask *t = &SCH_tasks_G[i];
+        if (t->pTask == 0) continue;
 
-    for (int i = 0; i < current_index_task; i++) {
-        if (SCH_tasks_G[i].Delay > 0) {
-            SCH_tasks_G[i].Delay--;
-//            global_tick_count++;  // Cập nhật tổng số tick
+        if (t->Delay > 0) t->Delay--;           // giam truoc, kiem tra sau
 
-
-        } else {
-            SCH_tasks_G[i].RunMe += 1;
-
-            // Nếu là one-shot task (PERIOD = 0), đánh dấu TaskID = -1 để xóa
-            if (SCH_tasks_G[i].Period > 0) {
-                SCH_tasks_G[i].Delay = SCH_tasks_G[i].Period;
-
-////            	HAL_Delay(1000);
-//            	printf("Current index task: %d\n\r", current_index_task);
-//                SCH_Delete_Task(-1);
-            } else  {
-                // Đặt lại Delay nếu task định kỳ
-//                SCH_tasks_G[i].TaskID = -1;  // Đánh dấu để xóa
-            	SCH_tasks_G[i].DeleteMe = 1;
-
-
+        if (t->Delay == 0) {
+            if (t->Period) {                    // periodic
+                t->RunMe++;
+                t->Delay = t->Period;           // chu ky dung bang Period tick
+            } else if (t->RunMe == 0) {         // one-shot: chi bao 1 lan
+                t->RunMe = 1;
             }
         }
     }
@@ -91,68 +77,41 @@ void SCH_Update(void) {
 
 
 //origin
-void SCH_Dispatch_Tasks(void){
+void SCH_Dispatch_Tasks(void) {
+    for (uint32_t i = 0; i < SCH_MAX_TASKS; i++) {
+        if (SCH_tasks_G[i].pTask && SCH_tasks_G[i].RunMe > 0) {
+            __disable_irq();
+            SCH_tasks_G[i].RunMe--;
+            __enable_irq();
 
-	for(int i = 0; i < current_index_task; i++){
-		if(SCH_tasks_G[i].RunMe > 0){
-			SCH_tasks_G[i].RunMe --;
-			(*SCH_tasks_G[i].pTask)();
-
+            (*SCH_tasks_G[i].pTask)();
             printf("Task %d executed at %d TICK\n\r", SCH_tasks_G[i].TaskID, global_tick_count);
-		}
 
-//		if(SCH_tasks_G[i].Period == 0){
-		if(SCH_tasks_G[i].DeleteMe == 1){
-//		if(SCH_tasks_G[i].TaskID == -1){
-
-
-//			printf("Current index task: %d\n\r", current_index_task);
-
-            printf("Task %d deleted at %d TICK\n\r", SCH_tasks_G[i].TaskID, global_tick_count);
-
-			SCH_Delete_Task(SCH_tasks_G[i].TaskID);
-//			SCH_Delete_Task(-1);
-
-			i--;
-
-		}
-	}
+            if (SCH_tasks_G[i].Period == 0) {
+                printf("Task %d deleted at %d TICK\n\r", SCH_tasks_G[i].TaskID, global_tick_count);// one-shot: xoa, giai phong slot
+                SCH_Delete_Task(i);
+            }
+        }
+    }
 }
+
 
 
 
 
 
 //origin
-void SCH_Delete_Task(uint32_t taskID) {
-    // Find the task with the given TaskID
-    for (int i = 0; i < current_index_task; i++) {
-        if (SCH_tasks_G[i].TaskID == taskID) {
-            // Remove the task by shifting all subsequent tasks up
-            for (int j = i; j < current_index_task - 1; j++) {
-                SCH_tasks_G[j] = SCH_tasks_G[j + 1];
-                SCH_tasks_G[j].TaskID = j; // Cập nhật lại TaskID cho đúng vị trí
-
-
-            }
-            // Clear the last task slot
-            SCH_tasks_G[current_index_task - 1].pTask = 0x0000;
-            SCH_tasks_G[current_index_task - 1].Delay = 0;
-            SCH_tasks_G[current_index_task - 1].Period = 0;
-            SCH_tasks_G[current_index_task - 1].RunMe = 0;
-
-            SCH_tasks_G[current_index_task - 1].TaskID = 0;
-
-            // Decrement the current task index
-            current_index_task--;
-
-            printf("Current index task after delete: %d\n\r", current_index_task);
-
-            return;
-        }
-    }
+uint8_t SCH_Delete_Task(uint32_t taskID) {
+    if (taskID >= SCH_MAX_TASKS) return 0;
+    uint8_t ok = (SCH_tasks_G[taskID].pTask != 0);
+    SCH_tasks_G[taskID].pTask  = 0;
+    SCH_tasks_G[taskID].Delay  = 0;
+    SCH_tasks_G[taskID].Period = 0;
+    SCH_tasks_G[taskID].RunMe  = 0;
+    SCH_tasks_G[taskID].TaskID = 0;
+    return ok;
+    printf("Current index task after delete: %d\n\r", current_index_task);
 }
-
 
 
 
